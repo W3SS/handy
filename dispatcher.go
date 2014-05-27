@@ -82,6 +82,8 @@ func CContext(r interface{}) *Context {
 		}
 		globalRequestMapMutex.RUnlock()
 		return nil
+	case *Mux:
+		return r.Context
 	case *Context:
 		return r
 	}

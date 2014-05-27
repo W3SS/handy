@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"io"
 	"errors"
+	"encoding/json"
 )
 
 const (
@@ -22,7 +23,7 @@ func wrapper(handler interface{}) func(*Mux, * http.Request, *Context) {
 
 	switch handler := handler.(type){
 
-		//Handlers With Returns
+		//Handlers With String Returns
 	case func() string:
 		return func(mux *Mux, r *http.Request, context *Context) {
 			w := context.Get("response").(http.ResponseWriter)
@@ -60,8 +61,67 @@ func wrapper(handler interface{}) func(*Mux, * http.Request, *Context) {
 			w := context.Get("response").(http.ResponseWriter)
 			io.WriteString(w, handler(r, context))
 		}
+		//
+		//
+		//
+		//
+		//Handlers With Returns interface{}
+		//
+		//
+		//
+		//
+	case func() interface{}:
+		return func(mux *Mux, r *http.Request, context *Context) {
+			w := context.Get("response").(http.ResponseWriter)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(handler())
+		}
+	case func(*Context) interface{}:
+		return func(mux *Mux, r *http.Request, context *Context) {
+			w := context.Get("response").(http.ResponseWriter)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(handler(context))
+		}
+	case func(*http.Request) interface{}:
+		return func(mux *Mux, r *http.Request, context *Context) {
+			w := context.Get("response").(http.ResponseWriter)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(handler(r))
+		}
+	case func(http.ResponseWriter) interface{}:
+		return func(mux *Mux, r *http.Request, context *Context) {
+			w := context.Get("response").(http.ResponseWriter)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(handler(w))
+		}
+	case func(http.ResponseWriter, *http.Request) interface{}:
+		return func(mux *Mux, r *http.Request, context *Context) {
+			w := context.Get("response").(http.ResponseWriter)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(handler(w, r))
+		}
 
+	case func(*Context, *http.Request) interface{}:
+		return func(mux *Mux, r *http.Request, context *Context) {
+			w := context.Get("response").(http.ResponseWriter)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(handler(context, r))
+		}
+
+	case func(*http.Request, *Context) interface{}:
+		return func(mux *Mux, r *http.Request, context *Context) {
+			w := context.Get("response").(http.ResponseWriter)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(handler(r, context))
+		}
+		//
+		//
+		//
 		//Handlers Without Returns
+		//
+		//
+		//
+		//
 	case func(*Context):
 		return func(mux *Mux, r *http.Request, context *Context) {
 			handler(context)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	. "github.com/go4r/handy"
 	"net/http"
+	"github.com/go4r/handy/lib"
 )
 
 type IndexController struct{ Annotations }
@@ -38,11 +39,9 @@ func (controller *IndexController) getUsers(w http.ResponseWriter, r *http.Reque
 
 	session := Session(r)
 
-	if _, ok := session.Values["userId"]; !ok {
-		session.Values["userId"] = 0.0
-	}
 
-	userId += session.Values["userId"].(float64)
+
+	userId += lib.Float64Session(r, "userId")
 
 	session.Values["userId"] = userId
 
