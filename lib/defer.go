@@ -5,7 +5,7 @@ import "github.com/go4r/handy"
 type r_defer chan func()
 
 var (
-	_ = handy.Server.Context.SetProvider(
+	_ = handy.Server.Context().SetProvider(
 		"defer",
 		func(c *handy.Context) func() interface{} {
 

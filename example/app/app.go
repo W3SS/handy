@@ -9,17 +9,25 @@ import (
 
 type IndexController struct{ Annotations }
 
-func (controller *IndexController) Annotates() {
+func (controller *IndexController) Annotate() {
 
-	controller.Annotation(
+	controller.
+	Annotation(
+		Before("metrics"),
+		controller,
+	).
+	Annotation(
+		Before("authenticated"),
 		Name("index.getuser"),
 		Any("/getuser/(number:userId)"),
 		controller.getUsers,
-	).Annotation(
+	).
+	Annotation(
 		Name("index.index"),
 		Any("/"),
 		controller.indexAction,
-	).Annotation(
+	).
+	Annotation(
 		Name("index.setuser"),
 		Any("/setuser/(:name)"),
 		controller.setUser,
@@ -31,6 +39,7 @@ func (controller *IndexController) setUser(w http.ResponseWriter, r *http.Reques
 
 	session := Session(r)
 	session.Values["user"] = StringParameter(r, "name")
+	session.Values["userId"] = float64(10)
 	Forward(r, "index.getuser", 13)
 }
 
@@ -38,8 +47,6 @@ func (controller *IndexController) getUsers(w http.ResponseWriter, r *http.Reque
 	userId := NumberParameter(r, "userId")
 
 	session := Session(r)
-
-
 
 	userId += lib.Float64Session(r, "userId")
 

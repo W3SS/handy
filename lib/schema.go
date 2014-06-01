@@ -10,7 +10,7 @@ var DefaultSchemaDecoder = schema.NewDecoder()
 
 func init() {
 
-	handy.Server.Context.SetProvider("gorilla.schema", func(c *handy.Context) func() interface{} {
+	handy.Server.Context().SetProvider("gorilla.schema", func(c *handy.Context) func() interface{} {
 		return func() interface{} {
 			return DefaultSchemaDecoder
 		}

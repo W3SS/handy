@@ -4,25 +4,15 @@ type AnnotationProcessor func(interface{}, interface{})
 
 type Annotated interface {
 	annotator() *Annotations
-	Annotates()
+	Annotate()
 }
 
-type Annotation struct {
-	Value      interface{} //Represents the Value Being Annotated
-	Annotation interface{} //The Annotation Object
-}
-
-func (anno *Annotation) init() {
-	switch annotation := anno.Annotation.(type) {
-	case interface{
-		Init(interface{})
-	}:
-		annotation.Init(anno.Value)
-	}
+type IAnnotation interface {
+	Init(interface{})
 }
 
 type Annotations struct {
-	Annotations []*Annotation
+	Annotations map[*interface{}][]interface{}
 	annotated   bool
 }
 
@@ -31,40 +21,27 @@ func (annotations *Annotations) annotator() *Annotations {
 }
 
 func (annotations *Annotations) Annotation(annotation interface{}, value interface{}, p_annotations ...interface{}) *Annotations {
+	if annotations.Annotations == nil {
+		annotations.Annotations = map[*interface{}][]interface{}{}
+	}
+
 	if len(p_annotations) == 0 {
-
-		annotations.Annotations = append(annotations.Annotations, &Annotation{value, annotation})
-
+		annotations.Annotations[&value] = append(annotations.Annotations[&value], annotation)
 	} else {
-
 		l_value := p_annotations[len(p_annotations) - 1]
 		p_annotations = p_annotations[0 : len(p_annotations)-1]
-
-		annotations.Annotations = append(annotations.Annotations, &Annotation{l_value, annotation})
-		annotations.Annotations = append(annotations.Annotations, &Annotation{l_value, value})
-
-		for annotation := range p_annotations {
-			annotations.Annotations = append(annotations.Annotations, &Annotation{l_value, annotation})
-		}
+		annotations.Annotations[&l_value] = append(annotations.Annotations[&l_value], annotation, value)
+		annotations.Annotations[&l_value] = append(annotations.Annotations[&l_value], p_annotations...)
 	}
 	return annotations
 }
 
-func (ann *Annotations) ProcessAnnotations(annotationProcessor AnnotationProcessor) {
-	for _, v := range ann.Annotations {
-		annotationProcessor(v.Value, v.Annotation)
-	}
-}
-
-func GetAnnotations(annotated Annotated) *Annotations {
+func GetAnnotations(annotated Annotated) map[*interface{}][]interface{} {
 	annotator := annotated.annotator()
 	if annotator.annotated {
-		return annotator
+		return annotator.Annotations
 	}
-
-	annotated.Annotates()
-	for _, annotation := range annotator.Annotations {
-		annotation.init()
-	}
-	return annotator
+	annotated.Annotate()
+	annotator.annotated = true
+	return annotator.Annotations
 }

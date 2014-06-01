@@ -15,7 +15,7 @@ type AnnotatedStruct struct {
 	handy.Annotations
 }
 
-func (t *AnnotatedStruct) Annotates() {
+func (t *AnnotatedStruct) Annotate() {
 	t.Annotation(
 		Get{"/"},
 		t.IndexAction,

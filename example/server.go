@@ -1,29 +1,48 @@
 package main
 
 import (
-	"github.com/go4r/handy"
+	. "github.com/go4r/handy"
 	"github.com/go4r/handy/example/app"
 	"net/http"
+	"github.com/go4r/handy/lib"
+	"time"
+	"fmt"
 )
 
 func main() {
 
 	//http.DefaultServeMux
-	var (
-		mainController = &app.IndexController{}
-	)
-
-
 	println("Starting Server")
 
-	handy.Server.Map(
-	mainController,
-	)
+	Server.SetMiddleware("authenticated", func(r *http.Request) bool {
+		userId := lib.Float64Session(r, "userId")
 
-	handy.Server.Get("/public/(*:filepath)",
-	func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "public/"+handy.StringParameter(r, "filepath"))
+		if userId != 0 {
+			return true
+		}
+
+		RespondWithStatus(r, "You dont have access to this area", http.StatusUnauthorized)
+
+		return false
 	})
 
-	http.ListenAndServe(":8080", handy.Server)
+	Server.SetMiddleware("metrics", func(r *http.Request) {
+		ctime := time.Now()
+		lib.Defer(r, func() {
+			ntime := time.Since(ctime)
+			println("Elapsed Time", ntime.String())
+		})
+	})
+
+	Server.Map(
+	&app.IndexController{},
+	)
+
+	Server.HandleGet("/public/(*:filepath)", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "public/"+StringParameter(r, "filepath"))
+	}).Before("authenticated").After(func(r *http.Request) {
+		fmt.Println("Respond: " + r.URL.Path)
+	})
+
+	ListenAndServer(":8080")
 }

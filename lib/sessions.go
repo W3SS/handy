@@ -11,43 +11,10 @@ var (
 	DefaultSessionKeyPars              = [][]byte{[]byte(`2TZs4ESupxTybxm9JYXEeV6FuvI8YNKA`)}
 	DefaultSessionStore sessions.Store = sessions.NewFilesystemStore("private/sessions", DefaultSessionKeyPars...)
 	DefaultSessionName                 = "handy_session"
-
 )
 
-type Cookies struct {
-	Cookies map[string]*http.Cookie
-	r *http.Request
-}
-
-func (cookies *Cookies) Set(k string, v string) *http.Cookie {
-	if cookies.Cookies == nil {
-		cookies.Cookies = map[string]*http.Cookie{}
-	}
-	cookie := &http.Cookie{Name:k, Value:v}
-	cookies.Cookies[k] = cookie
-	return cookie
-}
-
-func (cookies *Cookies) Get(k string) string {
-	if v, ok := cookies.Cookies[k]; ok {
-		return v.Value
-	}
-	value, _ := cookies.r.Cookie(k)
-	return value.Value
-}
-
-func (cookies *Cookies) Has(k string) bool {
-	if _, ok := cookies.Cookies[k]; ok {
-		return ok
-	}
-	_, ok := cookies.r.Cookie(k)
-	return ok == nil
-}
-
 func init() {
-
-	handy.Server.Context.SetProviderMap(handy.ContextProviderMap{
-
+	handy.Server.Context().MapProviders(handy.ProvidersMap{
 		"cookies":func(c *handy.Context) func() interface{} {
 			var cookies = &Cookies{map[string]*http.Cookie{}, c.Get("request").(*http.Request)}
 			c.CleanupFunc(func() {
@@ -93,6 +60,36 @@ func init() {
 			}
 		},
 	})
+}
+
+type Cookies struct {
+	Cookies map[string]*http.Cookie
+	r *http.Request
+}
+
+func (cookies *Cookies) Set(k string, v string) *http.Cookie {
+	if cookies.Cookies == nil {
+		cookies.Cookies = map[string]*http.Cookie{}
+	}
+	cookie := &http.Cookie{Name:k, Value:v}
+	cookies.Cookies[k] = cookie
+	return cookie
+}
+
+func (cookies *Cookies) Get(k string) string {
+	if v, ok := cookies.Cookies[k]; ok {
+		return v.Value
+	}
+	value, _ := cookies.r.Cookie(k)
+	return value.Value
+}
+
+func (cookies *Cookies) Has(k string) bool {
+	if _, ok := cookies.Cookies[k]; ok {
+		return ok
+	}
+	_, ok := cookies.r.Cookie(k)
+	return ok == nil
 }
 
 func GetCookies(r interface{}) (*Cookies) {

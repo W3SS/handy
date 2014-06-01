@@ -3,6 +3,7 @@ package handy
 import (
 	"net/http"
 	"bytes"
+	"fmt"
 )
 
 type Any string
@@ -10,109 +11,292 @@ type Get string
 type Post string
 type Delete string
 type Put string
+type NotFound string
+
 type Name string
+type Before string
+type After string
+
+
+type Middleware func(r *http.Request) bool
+
+type MuxControllerOnAttachMux interface {
+	OnAttach(*Mux)
+}
+
+type MuxControllerOnAttachContext interface {
+	OnAttach(*Context)
+}
+
+type MuxControllerOnRequest interface {
+	OnRequest(r *http.Request) bool
+}
+
+type MuxControllerOnRequestEnd interface {
+	OnRequestEnd(r *http.Request) bool
+}
+
+type MuxAnnotation interface {
+	Attach(controller interface{}, action interface{}, mux *Mux)
+}
+
+
+type MuxController struct {
+	Mux *Mux
+	Value      interface{}
+	before     []Middleware
+	after      []Middleware
+}
+
+type MuxHandler struct {
+	Controller *MuxController
+	Matcher *PatternMatcher
+	rawInvoker interface{}
+	invoke func(*Mux, http.ResponseWriter, * http.Request, *Context)
+	before     []Middleware
+	after      []Middleware
+}
+
+func (handler *MuxHandler) Before(middlewares ...interface{}) *MuxHandler {
+	for _, middleware := range middlewares {
+		handler.before = append(handler.before, handler.Controller.Mux.GetMiddleware(middleware))
+	}
+	return handler
+}
+
+func (handler *MuxHandler) After(middlewares ...interface{}) *MuxHandler {
+	for _, middleware := range middlewares {
+		handler.after = append(handler.after, handler.Controller.Mux.GetMiddleware(middleware))
+	}
+	return handler
+}
+
+func (handler *MuxHandler) Invoke(mux *Mux, w http.ResponseWriter, r *http.Request, c *Context) {
+
+	var isContinuable = true
+
+	if handler.invoke == nil {
+		handler.invoke = mux.Wrap(handler.rawInvoker)
+	}
+
+
+
+	if handler.Controller != nil {
+		for _, middleware := range handler.Controller.before {
+			if !middleware(r) {
+				isContinuable = false
+				break
+			}
+		}
+
+		if isContinuable {
+			if controller, ok := handler.Controller.Value.(MuxControllerOnRequest); ok {
+				if !controller.OnRequest(r) {
+					isContinuable = false
+				}
+			}
+		}
+	}
+
+	if isContinuable {
+		for _, middleware := range handler.before {
+			if !middleware(r) {
+				isContinuable = false
+				break
+			}
+		}
+	}
+	if isContinuable {
+		handler.invoke(mux, w, r, c)
+	}
+
+	for _, middleware := range handler.after {
+		if !middleware(r) {
+			return
+		}
+	}
+
+
+	if handler.Controller != nil {
+
+		if controller, ok := handler.Controller.Value.(MuxControllerOnRequestEnd); ok {
+			if !controller.OnRequestEnd(r) {
+				return
+			}
+		}
+
+		for _, middleware := range handler.Controller.after {
+			if !middleware(r) {
+				return
+			}
+		}
+	}
+}
 
 type Mux struct {
-	Names    map[string]*ParserParser
+	Names    map[string]*MuxHandler
 
-	ANY    []*ParserParser
-	GET    []*ParserParser
-	POST   []*ParserParser
-	PUT    []*ParserParser
-	DELETE []*ParserParser
+	any      []*MuxHandler
+	get      []*MuxHandler
+	post     []*MuxHandler
+	put      []*MuxHandler
+	delete   []*MuxHandler
+	notFound []*MuxHandler
 
-	preRequest      []func(*Mux, *http.Request, *Context)
-	postRequest     []func(*Mux, *http.Request, *Context)
-	notFoundRequest []func(*Mux, *http.Request, *Context)
-	errRequest      []func(*Context, interface{})
+	preRequest      []Middleware
+	postRequest     []Middleware
+	errRequest      []Middleware
 
-	ParametersParser map[string]func([]byte) (interface{}, int, bool)
 
-	Context *Context
+	wrappers    []func(interface{}) func(*Mux, http.ResponseWriter, * http.Request, *Context)
+
+	subPatterns map[string]func([]byte) (interface{}, int, bool)
+
+	context *Context
+	defaultCtl MuxController
+}
+
+func (mux *Mux) SetDefaultCtl(ctl interface{}) {
+	mux.defaultCtl.Value = ctl
+}
+
+
+func (mux *Mux) Wrap(handler interface{}) func(*Mux, http.ResponseWriter, * http.Request, *Context) {
+
+	if handler, ok := handler.(func(*Mux, http.ResponseWriter, * http.Request, *Context)); ok {
+		return handler
+	}
+
+	for _, wrapper := range mux.wrappers {
+		handler := wrapper(handler)
+		if handler != nil {
+			return handler
+		}
+	}
+	panic(fmt.Errorf("Invalid Handler %#v, Could not find a wrapper for the handler", handler))
+}
+
+func (mux *Mux) AddWrappers(wrapper func(interface{}) func(*Mux, http.ResponseWriter, * http.Request, *Context)) {
+	mux.wrappers = append(mux.wrappers, wrapper)
+}
+
+func (mux *Mux) Context() *Context {
+	return mux.context
+}
+
+func (mux *Mux) SetSubPattern(name string, matcher func([]byte) (interface{}, int, bool)) {
+	if mux.subPatterns == nil {    mux.subPatterns = map[string]func([]byte) (interface{}, int, bool){}}
+	mux.subPatterns[name] = matcher
+}
+
+func (mux *Mux) GetSubPattern(name string) func([]byte) (interface{}, int, bool) {
+
+	if pattern, ok := mux.subPatterns[name]; ok {
+		return pattern
+	}
+
+	if pattern, ok := mux.context.Get("mux.subPatterns." + name).(func([]byte) (interface{}, int, bool)); ok {
+		mux.SetSubPattern(name, pattern)
+		return pattern
+	}
+
+	return nil
+}
+
+func (mux *Mux) handlerLookup(url []byte, r *http.Request) (*MuxHandler, map[string]interface{}) {
+	var muxHandlers []*MuxHandler
+
+	switch r.Method{
+	case "GET":
+		muxHandlers = mux.get
+	case "POST":
+		muxHandlers = mux.post
+	case "PUT":
+		muxHandlers = mux.put
+	case "DELETE":
+		muxHandlers = mux.delete
+	}
+
+	for _, handler := range muxHandlers {
+		var matched, parameters = handler.Matcher.Test(url, mux)
+		if matched {
+			return handler, parameters
+		}
+	}
+
+	for _, handler := range mux.any {
+		var matched, parameters = handler.Matcher.Test(url, mux)
+		if matched {
+			return handler, parameters
+		}
+	}
+
+	for _, handler := range mux.notFound {
+		var matched, parameters = handler.Matcher.Test(url, mux)
+		if matched {
+			return handler, parameters
+		}
+	}
+
+	return nil, nil
 }
 
 func (mux *Mux) Dispatch(r_url string, w http.ResponseWriter, r *http.Request) {
+
 	var url = []byte(r_url)
-	context := beginRequestContext(r, mux.Context)
+
+	context := beginRequestContext(r, mux.context)
+	bufferedWriter := &responseWriter{w, r, bytes.NewBuffer(nil), http.StatusOK}
+
 
 	context.SetValue("request", r)
-
-	bufferedWriter := &ResponseWriter{w, r, bytes.NewBuffer(nil), http.StatusOK}
-
 	context.SetValue("response", bufferedWriter)
 	context.SetValue("mux", mux)
 
 
+	//Lookup for the matched handler
+	var handler, parameters = mux.handlerLookup(url, r)
+	context.SetValue("request.parameters", parameters)
+	context.SetValue("request.handler", handler)
+
 	defer func() {
-
 		if err := recover(); err != nil {
-			endRequestContext(r)
-			bufferedWriter.Commit()
-
 			if mux.errRequest == nil {
-				//w.WriteHeader(http.StatusInternalServerError)
-				//w.Write(([]byte)("Unexpected Error"))
+				bufferedWriter.buffer.Reset()
+				w.Write(([]byte)("Server Error"))
+				w.WriteHeader(http.StatusInternalServerError)
 				panic(err)
 			}else {
+				context.SetValue("panic.lasterror", err)
 				for _, v := range mux.errRequest {
-					v(context, err)
+					if !v(r) {
+						break
+					}
 				}
 			}
-
+			endRequestContext(r)
+			bufferedWriter.Commit()
 			return
 		}
-
-		for _, v := range mux.postRequest {
-			v(mux, r, context)
-		}
-
 		endRequestContext(r)
 		bufferedWriter.Commit()
 	}()
 
+	//Before
 	for _, v := range mux.preRequest {
-		v(mux, r, context)
-	}
-	//
-
-	switch r.Method{
-	case "GET":
-	for _, v := range mux.GET {
-		if v.Try(url, mux, r, context) {
-			return
+		if !v(r) {
+			handler = nil //Disable the execution of the main handler
+			break
 		}
 	}
-
-	case "POST":
-	for _, v := range mux.POST {
-		if v.Try(url, mux, r, context) {
+	if handler != nil {
+		handler.Invoke(mux, bufferedWriter, r, context)
+	}
+	//After
+	for _, v := range mux.postRequest {
+		if !v(r) {
 			return
 		}
-	}
-
-	case "PUT":
-	for _, v := range mux.PUT {
-		if v.Try(url, mux, r, context) {
-			return
-		}
-	}
-
-	case "DELETE":
-	for _, v := range mux.DELETE {
-		if v.Try(url, mux, r, context) {
-			return
-		}
-	}
-	}
-
-	for _, v := range mux.ANY {
-		if v.Try(url, mux, r, context) {
-			return
-		}
-	}
-
-	for _, v := range mux.notFoundRequest {
-		v(mux, r, context)
 	}
 }
 
@@ -122,92 +306,156 @@ func (mux *Mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (mux *Mux) Map(controllers ...interface{}) *Mux {
+
 	for _, v := range controllers {
 
-		var name Name
+		var controller = &MuxController{Mux:mux, Value:v}
 
-		GetAnnotations(v.(Annotated)).ProcessAnnotations(func(value interface{}, annotation interface{}) {
-			var slicePointer *[]*ParserParser
-			var parser *ParserParser
-			switch annotation := annotation.(type){
-			case Name:
-				name = annotation
+		switch v := v.(type){
+		case MuxControllerOnAttachMux:
+			v.OnAttach(mux)
+		case MuxControllerOnAttachContext:
+			v.OnAttach(mux.context)
+		}
 
-			case Get, Any, Post, Put, Delete:
+		for value, annotations := range GetAnnotations(v.(Annotated)) {
 
-				switch annotation := annotation.(type){
-				case Any:
-					parser = MakeParserParser((string)(annotation), value)
-					slicePointer = &mux.ANY
-
-				case Get:
-					parser = MakeParserParser((string)(annotation), value)
-					slicePointer = &mux.GET
-
-				case Post:
-					parser = MakeParserParser((string)(annotation), value)
-					slicePointer = &mux.POST
-
-				case Put:
-					parser = MakeParserParser((string)(annotation), value)
-					slicePointer = &mux.PUT
-
-				case Delete:
-					parser = MakeParserParser((string)(annotation), value)
-					slicePointer = &mux.DELETE
+			if *value == v {
+				for _, annotation := range annotations {
+					switch annotation := annotation.(type){
+					case Before:
+						controller.before = append(controller.before, mux.GetMiddleware(string(annotation)))
+					case After:
+						controller.after = append(controller.after, mux.GetMiddleware(string(annotation)))
+					}
 				}
+			}else {
 
-				if name != `` {
-					mux.Names[(string)(name)] = parser
+				var name Name
+				var parser *MuxHandler
+				var before []Middleware
+				var after []Middleware
+
+				for _, annotation := range annotations {
+
+					var slicePointer *[]*MuxHandler
+
+					switch annotation := annotation.(type){
+					case Name:
+						name = annotation
+					case Before:
+						before = append(before, mux.GetMiddleware(string(annotation)))
+					case After:
+						after = append(after, mux.GetMiddleware(string(annotation)))
+					case Get, Any, Post, Put, Delete:
+
+						var pattern string
+						switch annotation := annotation.(type){
+						case Any:
+							slicePointer = &mux.any
+							pattern = string(annotation)
+						case Get:
+							slicePointer = &mux.get
+							pattern = string(annotation)
+						case Post:
+							slicePointer = &mux.post
+							pattern = string(annotation)
+						case Put:
+							slicePointer = &mux.put
+							pattern = string(annotation)
+						case Delete:
+							slicePointer = &mux.delete
+							pattern = string(annotation)
+						case NotFound:
+							slicePointer = &mux.notFound
+							pattern = string(annotation)
+						}
+
+						parser = &MuxHandler{
+							Matcher:MakePatternMatcher(pattern),
+							before:before,
+							after:after,
+							rawInvoker:*value,
+							Controller:controller,
+						}
+						if name != `` {
+							if mux.Names == nil {
+								mux.Names = map[string]*MuxHandler{}
+							}
+							mux.Names[(string)(name)] = parser
+							name = ""
+						}
+
+						*slicePointer = append(*slicePointer, parser)
+
+					case MuxAnnotation:
+						annotation.Attach(v, *value, mux)
+					}
 				}
-
-				*slicePointer = append(*slicePointer, parser)
 			}
-		})
-
+		}
 	}
 	return mux
 }
 
-func (mux *Mux) Before(arguments ...interface{}) {
+func (mux *Mux) MiddlewareBefore(arguments ...interface{}) {
 	for _, v := range arguments {
-		mux.preRequest = append(mux.preRequest, wrapper(v))
+		mux.preRequest = append(mux.preRequest, mux.GetMiddleware(v))
 	}
 }
 
-func (mux *Mux) After(arguments ...interface{}) {
+func (mux *Mux) MiddlewareAfter(arguments ...interface{}) {
 	for _, v := range arguments {
-		mux.postRequest = append(mux.postRequest, wrapper(v))
+		mux.postRequest = append(mux.postRequest, mux.GetMiddleware(v))
 	}
 }
 
-func (mux *Mux) NotFound(arguments ...interface{}) {
+func (mux *Mux) MiddlewareErrors(arguments ...interface{}) {
 	for _, v := range arguments {
-		mux.notFoundRequest = append(mux.notFoundRequest, wrapper(v))
+		mux.errRequest = append(mux.errRequest, mux.GetMiddleware(v))
 	}
 }
 
-func (mux *Mux) Errors(arguments ...func(*Context, interface{})) {
-	mux.errRequest = append(mux.errRequest, arguments...)
+func makeSimpleHandler(pattern string, handler interface{}, mux *Mux) *MuxHandler {
+	if mux.defaultCtl.Mux == nil {
+		mux.defaultCtl.Mux = mux
+	}
+	return &MuxHandler{Matcher:MakePatternMatcher(pattern), rawInvoker:handler, Controller:&mux.defaultCtl}
 }
 
-
-func (mux *Mux) Any(pattern string, handler interface{}) {
-	mux.ANY = append(mux.ANY, MakeParserParser(pattern, handler))
+func (mux *Mux) HandleAny(pattern string, handler interface{}) *MuxHandler {
+	value := makeSimpleHandler(pattern, handler, mux)
+	mux.any = append(mux.any, value)
+	return value
 }
 
-func (mux *Mux) Get(pattern string, handler interface{}) {
-	mux.GET = append(mux.GET, MakeParserParser(pattern, handler))
+func (mux *Mux) HandleGet(pattern string, handler interface{}) *MuxHandler {
+	value := makeSimpleHandler(pattern, handler, mux)
+	mux.get = append(mux.get, value)
+	return value
 }
 
-func (mux *Mux) Post(pattern string, handler interface{}) {
-	mux.POST = append(mux.POST, MakeParserParser(pattern, handler))
+func (mux *Mux) HandlePost(pattern string, handler interface{}) *MuxHandler {
+	value := makeSimpleHandler(pattern, handler, mux)
+	mux.post = append(mux.post, value)
+	return value
 }
 
-func (mux *Mux) Put(pattern string, handler interface{}) {
-	mux.PUT = append(mux.PUT, MakeParserParser(pattern, handler))
+func (mux *Mux) HandlePut(pattern string, handler interface{}) *MuxHandler {
+	value := makeSimpleHandler(pattern, handler, mux)
+	mux.put = append(mux.put, value)
+	return value
 }
 
-func (mux *Mux) Delete(pattern string, handler interface{}) {
-	mux.DELETE = append(mux.DELETE, MakeParserParser(pattern, handler))
+func (mux *Mux) HandleDelete(pattern string, handler interface{}) *MuxHandler {
+	value := makeSimpleHandler(pattern, handler, mux)
+	mux.delete = append(mux.delete, value)
+	return value
 }
+
+func (mux *Mux) HandleNotFound(pattern string, handler interface{}) *MuxHandler {
+	value := makeSimpleHandler(pattern, handler, mux)
+	mux.notFound = append(mux.notFound, value)
+	return value
+}
+
