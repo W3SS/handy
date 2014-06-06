@@ -1,5 +1,7 @@
 package handy
 
+import "errors"
+
 type AnnotationProcessor func(interface{}, interface{})
 
 type Annotated interface {
@@ -15,6 +17,17 @@ type Annotations struct {
 	Annotations map[*interface{}][]interface{}
 	annotated   bool
 }
+
+func (annotated *Annotations) ProcessAnnotations(annotationProcessor func(interface{}, []interface{})) error {
+	if annotated.annotated == false {
+		return errors.New("Annotate method was not not called yet.")
+	}
+	for value, annotations := range annotated.Annotations {
+		annotationProcessor(*value, annotations)
+	}
+	return nil
+}
+
 
 func (annotations *Annotations) annotator() *Annotations {
 	return annotations

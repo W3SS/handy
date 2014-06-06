@@ -18,7 +18,15 @@ type Before string
 type After string
 
 
-type Middleware func(r *http.Request) bool
+type Middleware func(w http.ResponseWriter, r *http.Request, c *Context) bool
+
+type MuxAnnotationController interface {
+	AttachToController(value interface{}, controller *MuxController, mux *Mux)
+}
+
+type MuxAnnotationHandler interface {
+	AttachToHandler(value interface{}, controller *MuxHandler, mux *Mux)
+}
 
 type MuxControllerOnAttachMux interface {
 	OnAttach(*Mux)
@@ -29,17 +37,12 @@ type MuxControllerOnAttachContext interface {
 }
 
 type MuxControllerOnRequest interface {
-	OnRequest(r *http.Request) bool
+	OnRequest(http.ResponseWriter, *http.Request, *Context) bool
 }
 
 type MuxControllerOnRequestEnd interface {
-	OnRequestEnd(r *http.Request) bool
+	OnRequestEnd(http.ResponseWriter, *http.Request, *Context) bool
 }
-
-type MuxAnnotation interface {
-	Attach(controller interface{}, action interface{}, mux *Mux)
-}
-
 
 type MuxController struct {
 	Mux *Mux
@@ -59,14 +62,14 @@ type MuxHandler struct {
 
 func (handler *MuxHandler) Before(middlewares ...interface{}) *MuxHandler {
 	for _, middleware := range middlewares {
-		handler.before = append(handler.before, handler.Controller.Mux.GetMiddleware(middleware))
+		handler.before = append(handler.before, handler.Controller.Mux.WrapMiddleware(middleware))
 	}
 	return handler
 }
 
 func (handler *MuxHandler) After(middlewares ...interface{}) *MuxHandler {
 	for _, middleware := range middlewares {
-		handler.after = append(handler.after, handler.Controller.Mux.GetMiddleware(middleware))
+		handler.after = append(handler.after, handler.Controller.Mux.WrapMiddleware(middleware))
 	}
 	return handler
 }
@@ -83,7 +86,7 @@ func (handler *MuxHandler) Invoke(mux *Mux, w http.ResponseWriter, r *http.Reque
 
 	if handler.Controller != nil {
 		for _, middleware := range handler.Controller.before {
-			if !middleware(r) {
+			if !middleware(w, r, c) {
 				isContinuable = false
 				break
 			}
@@ -91,7 +94,7 @@ func (handler *MuxHandler) Invoke(mux *Mux, w http.ResponseWriter, r *http.Reque
 
 		if isContinuable {
 			if controller, ok := handler.Controller.Value.(MuxControllerOnRequest); ok {
-				if !controller.OnRequest(r) {
+				if !controller.OnRequest(w, r, c) {
 					isContinuable = false
 				}
 			}
@@ -100,7 +103,7 @@ func (handler *MuxHandler) Invoke(mux *Mux, w http.ResponseWriter, r *http.Reque
 
 	if isContinuable {
 		for _, middleware := range handler.before {
-			if !middleware(r) {
+			if !middleware(w, r, c) {
 				isContinuable = false
 				break
 			}
@@ -111,7 +114,7 @@ func (handler *MuxHandler) Invoke(mux *Mux, w http.ResponseWriter, r *http.Reque
 	}
 
 	for _, middleware := range handler.after {
-		if !middleware(r) {
+		if !middleware(w, r, c) {
 			return
 		}
 	}
@@ -120,13 +123,13 @@ func (handler *MuxHandler) Invoke(mux *Mux, w http.ResponseWriter, r *http.Reque
 	if handler.Controller != nil {
 
 		if controller, ok := handler.Controller.Value.(MuxControllerOnRequestEnd); ok {
-			if !controller.OnRequestEnd(r) {
+			if !controller.OnRequestEnd(w, r, c) {
 				return
 			}
 		}
 
 		for _, middleware := range handler.Controller.after {
-			if !middleware(r) {
+			if !middleware(w, r, c) {
 				return
 			}
 		}
@@ -173,10 +176,11 @@ func (mux *Mux) Wrap(handler interface{}) func(*Mux, http.ResponseWriter, * http
 			return handler
 		}
 	}
+
 	panic(fmt.Errorf("Invalid Handler %#v, Could not find a wrapper for the handler", handler))
 }
 
-func (mux *Mux) AddWrappers(wrapper func(interface{}) func(*Mux, http.ResponseWriter, * http.Request, *Context)) {
+func (mux *Mux) AddWrapper(wrapper func(interface{}) func(*Mux, http.ResponseWriter, * http.Request, *Context)) {
 	mux.wrappers = append(mux.wrappers, wrapper)
 }
 
@@ -269,7 +273,7 @@ func (mux *Mux) Dispatch(r_url string, w http.ResponseWriter, r *http.Request) {
 			}else {
 				context.SetValue("panic.lasterror", err)
 				for _, v := range mux.errRequest {
-					if !v(r) {
+					if !v(bufferedWriter, r, context) {
 						break
 					}
 				}
@@ -284,7 +288,7 @@ func (mux *Mux) Dispatch(r_url string, w http.ResponseWriter, r *http.Request) {
 
 	//Before
 	for _, v := range mux.preRequest {
-		if !v(r) {
+		if !v(bufferedWriter, r, context) {
 			handler = nil //Disable the execution of the main handler
 			break
 		}
@@ -294,7 +298,7 @@ func (mux *Mux) Dispatch(r_url string, w http.ResponseWriter, r *http.Request) {
 	}
 	//After
 	for _, v := range mux.postRequest {
-		if !v(r) {
+		if !v(bufferedWriter, r, context) {
 			return
 		}
 	}
@@ -324,29 +328,35 @@ func (mux *Mux) Map(controllers ...interface{}) *Mux {
 				for _, annotation := range annotations {
 					switch annotation := annotation.(type){
 					case Before:
-						controller.before = append(controller.before, mux.GetMiddleware(string(annotation)))
+						controller.before = append(controller.before, mux.WrapMiddleware(string(annotation)))
 					case After:
-						controller.after = append(controller.after, mux.GetMiddleware(string(annotation)))
+						controller.after = append(controller.after, mux.WrapMiddleware(string(annotation)))
+					case MuxAnnotationController:
+						annotation.AttachToController(*value, controller, mux)
 					}
 				}
 			}else {
 
 				var name Name
-				var parser *MuxHandler
+				var handler *MuxHandler
 				var before []Middleware
 				var after []Middleware
-
+				var onHandlers []MuxAnnotationHandler
 				for _, annotation := range annotations {
 
 					var slicePointer *[]*MuxHandler
 
 					switch annotation := annotation.(type){
+					case MuxAnnotationController:
+						annotation.AttachToController(*value, controller, mux)
+					case MuxAnnotationHandler:
+						onHandlers = append(onHandlers, annotation)
 					case Name:
 						name = annotation
 					case Before:
-						before = append(before, mux.GetMiddleware(string(annotation)))
+						before = append(before, mux.WrapMiddleware(string(annotation)))
 					case After:
-						after = append(after, mux.GetMiddleware(string(annotation)))
+						after = append(after, mux.WrapMiddleware(string(annotation)))
 					case Get, Any, Post, Put, Delete:
 
 						var pattern string
@@ -371,7 +381,7 @@ func (mux *Mux) Map(controllers ...interface{}) *Mux {
 							pattern = string(annotation)
 						}
 
-						parser = &MuxHandler{
+						handler = &MuxHandler{
 							Matcher:MakePatternMatcher(pattern),
 							before:before,
 							after:after,
@@ -382,14 +392,15 @@ func (mux *Mux) Map(controllers ...interface{}) *Mux {
 							if mux.Names == nil {
 								mux.Names = map[string]*MuxHandler{}
 							}
-							mux.Names[(string)(name)] = parser
+							mux.Names[(string)(name)] = handler
 							name = ""
 						}
 
-						*slicePointer = append(*slicePointer, parser)
+					for _, handlerAnnotation := range onHandlers {
+						handlerAnnotation.AttachToHandler(*value, handler, mux)
+					}
 
-					case MuxAnnotation:
-						annotation.Attach(v, *value, mux)
+						*slicePointer = append(*slicePointer, handler)
 					}
 				}
 			}
@@ -400,19 +411,19 @@ func (mux *Mux) Map(controllers ...interface{}) *Mux {
 
 func (mux *Mux) MiddlewareBefore(arguments ...interface{}) {
 	for _, v := range arguments {
-		mux.preRequest = append(mux.preRequest, mux.GetMiddleware(v))
+		mux.preRequest = append(mux.preRequest, mux.WrapMiddleware(v))
 	}
 }
 
 func (mux *Mux) MiddlewareAfter(arguments ...interface{}) {
 	for _, v := range arguments {
-		mux.postRequest = append(mux.postRequest, mux.GetMiddleware(v))
+		mux.postRequest = append(mux.postRequest, mux.WrapMiddleware(v))
 	}
 }
 
 func (mux *Mux) MiddlewareErrors(arguments ...interface{}) {
 	for _, v := range arguments {
-		mux.errRequest = append(mux.errRequest, mux.GetMiddleware(v))
+		mux.errRequest = append(mux.errRequest, mux.WrapMiddleware(v))
 	}
 }
 
